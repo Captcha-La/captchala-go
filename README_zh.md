@@ -2,7 +2,7 @@
 
 服务端验证 Captcha Token 的 Go SDK。
 
-[English](README.md)
+[English](README.md) | **简体中文**
 
 - [官网](https://captcha.la)
 - [文档](https://docs.captcha.la/zh-CN/sdk/server-go)

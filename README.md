@@ -2,7 +2,7 @@
 
 Server-side SDK for validating Captcha tokens.
 
-[中文文档](README_zh.md)
+**English** | [简体中文](README_zh.md)
 
 - [Website](https://captcha.la)
 - [Documentation](https://docs.captcha.la/sdk/server-go)
