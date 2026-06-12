@@ -81,6 +81,14 @@ type ValidateResult struct {
 	Error string `json:"error,omitempty"`
 	// Warning contains warning message (e.g., for client-only tokens)
 	Warning string `json:"warning,omitempty"`
+	// Degraded indicates a dg_ token issued under service degradation
+	// (e.g. the app's quota is exhausted). Valid is ALWAYS false for degraded
+	// tokens (secure default); whether to accept the request is YOUR decision:
+	//
+	//	if result.Valid || result.Degraded { /* allow */ }
+	Degraded bool `json:"degraded,omitempty"`
+	// DegradedReason is the degradation cause, e.g. "quota_exhausted"
+	DegradedReason string `json:"degraded_reason,omitempty"`
 }
 
 type apiResponse struct {
@@ -240,6 +248,21 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 		}
 	}
 
+	// Degraded token (dg_ prefix): issued when the app's quota is exhausted so
+	// end-user flows are not interrupted. Valid stays false; integrator decides.
+	if degraded, ok := apiResp.Data["degraded"].(bool); ok && degraded {
+		result := &ValidateResult{
+			Valid:          false,
+			Offline:        isOffline,
+			Degraded:       true,
+			DegradedReason: "quota_exhausted",
+		}
+		if reason, ok := apiResp.Data["reason"].(string); ok && reason != "" {
+			result.DegradedReason = reason
+		}
+		return result, nil
+	}
+
 	// Validation failed
 	errMsg := "unknown_error"
 	if e, ok := apiResp.Data["error"].(string); ok {
@@ -350,7 +373,7 @@ func ImageURLItem(url string) ModerationItem {
 type ModerationResult struct {
 	OK          bool            `json:"ok"`
 	Flagged     bool            `json:"flagged"`
-	Categories  map[string]bool `json:"categories,omitempty"`  // category name → tripped
+	Categories  map[string]bool `json:"categories,omitempty"`   // category name → tripped
 	ContentType string          `json:"content_type,omitempty"` // "text" / "image" / "mixed"
 	Raw         map[string]any  `json:"raw,omitempty"`          // full upstream payload
 	Error       string          `json:"error,omitempty"`
