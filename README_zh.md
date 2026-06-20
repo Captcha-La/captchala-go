@@ -67,10 +67,8 @@ func main() {
 
 ### `Client.ValidateWithClientIP(token string, keepToken bool, clientIP string) (*ValidateResult, error)`
 
-校验 Token, 同时把终端用户 IP 透传给后端做 `bind_ip` 校验。如果原 `pass_token`
-签发时绑定了 IP, 后端会比对; 不匹配会拒绝。传你入站请求里取到的真实用户 IP
-（如 `X-Forwarded-For`），不是中间代理 IP。`clientIP` 为空时该字段被省略,
-行为与 `ValidateWithOptions` 一致。
+校验 Token 并透传终端用户 IP。IP **可选但建议传** —— 传你入站请求里取到的终端
+用户 IP, 用于额外的风控校验; 不传也可以(则用 `Validate` / `ValidateWithOptions`)。
 
 ```go
 result, err := client.ValidateWithClientIP(token, false, userIP)
@@ -80,14 +78,25 @@ result, err := client.ValidateWithClientIP(token, false, userIP)
 
 ```go
 type ValidateResult struct {
-    Valid       bool   // 验证是否通过
-    Offline     bool   // 是否为离线验证
-    ClientOnly  bool   // 是否为纯客户端 Token
-    ChallengeID string // 挑战 ID
-    Action      string // 业务动作
-    UID         string // server_token 签发时绑定的 user ID, 用于核对身份
-    Error       string // 错误信息
-    Warning     string // 警告信息
+    Valid       bool        // 验证是否通过
+    Offline     bool        // 是否为离线验证
+    ClientOnly  bool        // 是否为纯客户端 Token
+    ChallengeID string      // 挑战 ID
+    Action      string      // 业务动作
+    UID         string      // server_token 签发时绑定的 user ID, 用于核对身份
+    Error       string      // 错误信息
+    Warning     string      // 警告信息
+    CaptchaArgs CaptchaArgs // 解题上下文回显(仅供参考)
+}
+
+// CaptchaArgs 为解题当时记录的上下文, validate 时回显(仅供参考, 不参与判定)。
+type CaptchaArgs struct {
+    Platform  string // web / android / ios / flutter / windows / ...
+    UserIP    string // 解题时记录的用户 IP
+    Referer   string // web: 解题页面 URL(native 为空)
+    Pkg       string // native: app 包名 / bundle id(web 为空)
+    SolvedAt  int64  // 解题完成时间(unix 秒)
+    RiskScore int64  // 0-100, 越高越可疑
 }
 ```
 
