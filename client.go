@@ -110,6 +110,10 @@ type CaptchaArgs struct {
 	Pkg string `json:"pkg"`
 	// SolvedAt is the solve completion time (unix seconds), 0 when unknown.
 	SolvedAt int64 `json:"solved_at"`
+	// RiskScore is the solve-time risk score (0-100, higher = riskier;
+	// reCAPTCHA v3 score style). Informational — for your own secondary risk
+	// decisions, not a pass/fail gate.
+	RiskScore int64 `json:"risk_score"`
 }
 
 type apiResponse struct {
@@ -290,6 +294,9 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 				}
 				if v, ok := ca["solved_at"].(float64); ok {
 					result.CaptchaArgs.SolvedAt = int64(v)
+				}
+				if v, ok := ca["risk_score"].(float64); ok {
+					result.CaptchaArgs.RiskScore = int64(v)
 				}
 			}
 			return result, nil
