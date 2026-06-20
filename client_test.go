@@ -211,9 +211,8 @@ func TestValidateOfflineUsesBackupURL(t *testing.T) {
 	}
 }
 
-func TestValidateNeverSendsClientIP(t *testing.T) {
-	// ValidateWithClientIP keeps its signature for backward compat, but the IP
-	// is deliberately never transmitted (the dashboard ignores a caller IP).
+func TestValidateSendsClientIPWhenProvided(t *testing.T) {
+	// client_ip is optional: sent when provided (used for risk checks).
 	var captured validateRequest
 	srv := newMockServer(t, map[string]interface{}{
 		"code": 0,
@@ -232,8 +231,8 @@ func TestValidateNeverSendsClientIP(t *testing.T) {
 	if !result.Valid {
 		t.Error("expected valid=true")
 	}
-	if captured.ClientIP != "" {
-		t.Errorf("client_ip must never be sent, got %q", captured.ClientIP)
+	if captured.ClientIP != "203.0.113.9" {
+		t.Errorf("client_ip should be sent when provided, got %q", captured.ClientIP)
 	}
 }
 
