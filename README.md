@@ -67,13 +67,10 @@ Validate a token. If `keepToken` is `true`, the token won't be consumed and can 
 
 ### `Client.ValidateWithClientIP(token string, keepToken bool, clientIP string) (*ValidateResult, error)`
 
-> **Deprecated:** the `clientIP` argument is ignored. The platform no longer
-> gates pass/fail on a caller-supplied IP — across a CDN + dual-stack
-> (IPv4/IPv6) network the visitor solves the challenge over one address family
-> and submits the form over another, so an IP comparison rejects legitimate
-> users (matches Turnstile / reCAPTCHA's optional `remoteip`). Use `Validate` /
-> `ValidateWithOptions`; the solve-time IP comes back in
-> `result.CaptchaArgs.UserIP`. Kept only for backward compatibility.
+Validate a token and forward the end-user IP. The IP is **optional but
+recommended** — pass the end-user's IP from your inbound request; it is used
+for additional risk checks. Safe to omit (then use `Validate` /
+`ValidateWithOptions`).
 
 ### `ValidateResult`
 
@@ -105,7 +102,7 @@ type CaptchaArgs struct {
 ```go
 result, _ := client.Validate(token)
 if result.Valid {
-    ip := result.CaptchaArgs.UserIP // informational — do NOT gate on it
+    ip := result.CaptchaArgs.UserIP // solve-time IP (informational)
     _ = ip
 }
 ```

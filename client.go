@@ -101,8 +101,7 @@ type ValidateResult struct {
 type CaptchaArgs struct {
 	// Platform: web / android / ios / flutter / windows / ...
 	Platform string `json:"platform"`
-	// UserIP recorded at solve time. NOT used for pass/fail (cross-domain +
-	// dual-stack make a solve-vs-submit IP comparison unreliable).
+	// UserIP recorded at solve time (informational).
 	UserIP string `json:"user_ip"`
 	// Referer is the web page URL the challenge was solved on (web only).
 	Referer string `json:"referer"`
@@ -125,10 +124,8 @@ type apiResponse struct {
 type validateRequest struct {
 	PassToken string `json:"pass_token"`
 	KeepToken bool   `json:"keep_token"`
-	// ClientIP is intentionally never populated any more (omitempty keeps it
-	// out of the body). The dashboard no longer gates pass/fail on a
-	// caller-supplied IP — cross-domain + dual-stack made it unreliable. The
-	// solve-time IP comes back in CaptchaArgs.UserIP instead.
+	// ClientIP is optional but recommended (omitempty): the end-user's IP from
+	// your inbound request, used for additional risk checks. Safe to omit.
 	ClientIP string `json:"client_ip,omitempty"`
 }
 
@@ -158,13 +155,11 @@ func (c *Client) ValidateWithOptions(token string, keepToken bool) (*ValidateRes
 	return c.validateInternal(token, keepToken, "")
 }
 
-// ValidateWithClientIP validates a token.
+// ValidateWithClientIP validates a token and forwards the end-user IP.
 //
-// Deprecated: the clientIP argument is ignored. The dashboard no longer gates
-// pass/fail on a caller-supplied IP (cross-domain + dual-stack IPv4/IPv6 made
-// it unreliable). Kept for backward compatibility; use Validate /
-// ValidateWithOptions. The solve-time IP is returned in
-// ValidateResult.CaptchaArgs.UserIP.
+// The IP is optional but recommended — pass the end-user's IP from your
+// inbound request; it is used for additional risk checks. Otherwise use
+// Validate / ValidateWithOptions.
 func (c *Client) ValidateWithClientIP(token string, keepToken bool, clientIP string) (*ValidateResult, error) {
 	return c.validateInternal(token, keepToken, clientIP)
 }
@@ -212,13 +207,13 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 		isOffline = false
 	}
 
-	// Make request. clientIP is accepted by the (deprecated) public method for
-	// backward compatibility but is deliberately NOT sent — the dashboard
-	// ignores a caller IP for pass/fail (see validateRequest.ClientIP).
-	_ = clientIP
+	// Make request. clientIP is optional (omitempty): pass it if you want it
+	// recorded, or leave it empty. Either way the dashboard does not gate
+	// pass/fail on a caller IP (see validateRequest.ClientIP).
 	reqBody := validateRequest{
 		PassToken: token,
 		KeepToken: keepToken,
+		ClientIP:  clientIP,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
