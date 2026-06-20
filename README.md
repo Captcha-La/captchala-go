@@ -67,29 +67,46 @@ Validate a token. If `keepToken` is `true`, the token won't be consumed and can 
 
 ### `Client.ValidateWithClientIP(token string, keepToken bool, clientIP string) (*ValidateResult, error)`
 
-Validate a token and forward the end-user IP for `bind_ip` verification. If the
-`pass_token` was issued with `bind_ip`, the backend compares this value against
-the bound IP and rejects mismatches. Pass the real user IP extracted from YOUR
-inbound request (e.g., the `X-Forwarded-For` head), not a proxy IP. When
-`clientIP` is empty the field is omitted from the request body — behaving
-identically to `ValidateWithOptions`.
-
-```go
-result, err := client.ValidateWithClientIP(token, false, userIP)
-```
+> **Deprecated:** the `clientIP` argument is ignored. The platform no longer
+> gates pass/fail on a caller-supplied IP — across a CDN + dual-stack
+> (IPv4/IPv6) network the visitor solves the challenge over one address family
+> and submits the form over another, so an IP comparison rejects legitimate
+> users (matches Turnstile / reCAPTCHA's optional `remoteip`). Use `Validate` /
+> `ValidateWithOptions`; the solve-time IP comes back in
+> `result.CaptchaArgs.UserIP`. Kept only for backward compatibility.
 
 ### `ValidateResult`
 
 ```go
 type ValidateResult struct {
-    Valid       bool   // Whether validation passed
-    Offline     bool   // Whether this was offline verification
-    ClientOnly  bool   // Whether this is a client-only token
-    ChallengeID string // Challenge ID
-    Action      string // Business action
-    UID         string // User ID bound via bind_uid (for server-side identity check)
-    Error       string // Error message
-    Warning     string // Warning message
+    Valid       bool        // Whether validation passed
+    Offline     bool        // Whether this was offline verification
+    ClientOnly  bool        // Whether this is a client-only token
+    ChallengeID string      // Challenge ID
+    Action      string      // Business action
+    UID         string      // User ID bound via bind_uid (for server-side identity check)
+    Error       string      // Error message
+    Warning     string      // Warning message
+    CaptchaArgs CaptchaArgs // Solve-context echo (informational only)
+}
+
+// CaptchaArgs is the solve-time context, echoed back on validate
+// (Geetest-style). All fields are informational — NEVER gate pass/fail on them.
+type CaptchaArgs struct {
+    Platform  string // web / android / ios / flutter / windows / ...
+    UserIP    string // end-user IP recorded at solve time
+    Referer   string // web: solve page URL (empty on native)
+    Pkg       string // native: app package / bundle id (empty on web)
+    SolvedAt  int64  // solve completion time (unix seconds)
+    RiskScore int64  // 0-100, higher = riskier (reCAPTCHA v3 score style)
+}
+```
+
+```go
+result, _ := client.Validate(token)
+if result.Valid {
+    ip := result.CaptchaArgs.UserIP // informational — do NOT gate on it
+    _ = ip
 }
 ```
 
