@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-06-20
+
+### Added
+- `ValidateResult.CaptchaArgs` (`CaptchaArgs` struct) — solve-context echo
+  returned by the dashboard: `Platform`, `UserIP`, `Referer` (web page URL),
+  `Pkg` (native app id), `SolvedAt` (unix seconds), `RiskScore` (0-100). All
+  informational.
+
+### Changed
+- `ValidateWithClientIP`'s IP argument is now **optional but recommended** —
+  pass the end-user IP if you have it (used for additional risk checks), or use
+  `Validate` / `ValidateWithOptions`. The IP is no longer used for an exact
+  solve-vs-submit comparison (which rejected legitimate users under CDN +
+  dual-stack IPv4/IPv6). Backward compatible.
+
 ## [1.0.2] - Unreleased
 
 ### Added
