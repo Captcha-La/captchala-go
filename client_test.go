@@ -211,7 +211,9 @@ func TestValidateOfflineUsesBackupURL(t *testing.T) {
 	}
 }
 
-func TestValidateWithClientIPIncludesInBody(t *testing.T) {
+func TestValidateNeverSendsClientIP(t *testing.T) {
+	// ValidateWithClientIP keeps its signature for backward compat, but the IP
+	// is deliberately never transmitted (the dashboard ignores a caller IP).
 	var captured validateRequest
 	srv := newMockServer(t, map[string]interface{}{
 		"code": 0,
@@ -230,11 +232,46 @@ func TestValidateWithClientIPIncludesInBody(t *testing.T) {
 	if !result.Valid {
 		t.Error("expected valid=true")
 	}
-	if captured.ClientIP != "203.0.113.9" {
-		t.Errorf("expected client_ip '203.0.113.9' in body, got %q", captured.ClientIP)
+	if captured.ClientIP != "" {
+		t.Errorf("client_ip must never be sent, got %q", captured.ClientIP)
 	}
-	if !captured.KeepToken && captured.KeepToken != false {
-		t.Errorf("unexpected keep_token")
+}
+
+func TestValidateParsesCaptchaArgs(t *testing.T) {
+	srv := newMockServer(t, map[string]interface{}{
+		"code": 0,
+		"msg":  "ok",
+		"data": map[string]interface{}{
+			"valid": true,
+			"captcha_args": map[string]interface{}{
+				"platform":  "web",
+				"user_ip":   "198.51.100.7",
+				"referer":   "https://shop.example.com/checkout",
+				"pkg":       nil,
+				"solved_at": float64(1750000000),
+			},
+		},
+	}, nil, nil)
+	defer srv.Close()
+
+	client := NewClient("k", "s")
+	client.BaseURL = srv.URL
+
+	result, err := client.Validate("pt_xyz")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CaptchaArgs.Platform != "web" {
+		t.Errorf("platform: got %q", result.CaptchaArgs.Platform)
+	}
+	if result.CaptchaArgs.UserIP != "198.51.100.7" {
+		t.Errorf("user_ip: got %q", result.CaptchaArgs.UserIP)
+	}
+	if result.CaptchaArgs.Referer != "https://shop.example.com/checkout" {
+		t.Errorf("referer: got %q", result.CaptchaArgs.Referer)
+	}
+	if result.CaptchaArgs.SolvedAt != 1750000000 {
+		t.Errorf("solved_at: got %d", result.CaptchaArgs.SolvedAt)
 	}
 }
 

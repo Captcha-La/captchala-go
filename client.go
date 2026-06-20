@@ -89,6 +89,27 @@ type ValidateResult struct {
 	Degraded bool `json:"degraded,omitempty"`
 	// DegradedReason is the degradation cause, e.g. "quota_exhausted"
 	DegradedReason string `json:"degraded_reason,omitempty"`
+	// CaptchaArgs is the solve-context echo (Geetest-style). All fields are
+	// informational and MUST NOT be used for the pass/fail decision.
+	CaptchaArgs CaptchaArgs `json:"captcha_args"`
+}
+
+// CaptchaArgs is the solve-time context the platform recorded, echoed back on
+// validate (comparable to Geetest captcha_args). Informational only — never
+// gate pass/fail on these. Fixed shape: every field is always present in the
+// response, empty/zero when unknown.
+type CaptchaArgs struct {
+	// Platform: web / android / ios / flutter / windows / ...
+	Platform string `json:"platform"`
+	// UserIP recorded at solve time. NOT used for pass/fail (cross-domain +
+	// dual-stack make a solve-vs-submit IP comparison unreliable).
+	UserIP string `json:"user_ip"`
+	// Referer is the web page URL the challenge was solved on (web only).
+	Referer string `json:"referer"`
+	// Pkg is the native app package / bundle id (native flows only).
+	Pkg string `json:"pkg"`
+	// SolvedAt is the solve completion time (unix seconds), 0 when unknown.
+	SolvedAt int64 `json:"solved_at"`
 }
 
 type apiResponse struct {
@@ -100,7 +121,11 @@ type apiResponse struct {
 type validateRequest struct {
 	PassToken string `json:"pass_token"`
 	KeepToken bool   `json:"keep_token"`
-	ClientIP  string `json:"client_ip,omitempty"`
+	// ClientIP is intentionally never populated any more (omitempty keeps it
+	// out of the body). The dashboard no longer gates pass/fail on a
+	// caller-supplied IP — cross-domain + dual-stack made it unreliable. The
+	// solve-time IP comes back in CaptchaArgs.UserIP instead.
+	ClientIP string `json:"client_ip,omitempty"`
 }
 
 // NewClient creates a new Captchala client with default timeout (5 seconds)
@@ -129,10 +154,13 @@ func (c *Client) ValidateWithOptions(token string, keepToken bool) (*ValidateRes
 	return c.validateInternal(token, keepToken, "")
 }
 
-// ValidateWithClientIP validates with explicit client IP (for bind_ip check).
-// Pass the real user IP from YOUR request, not the server-side proxy IP.
-// If the pass_token was issued with bind_ip, the backend will compare the
-// provided client_ip against the bound IP and reject mismatches.
+// ValidateWithClientIP validates a token.
+//
+// Deprecated: the clientIP argument is ignored. The dashboard no longer gates
+// pass/fail on a caller-supplied IP (cross-domain + dual-stack IPv4/IPv6 made
+// it unreliable). Kept for backward compatibility; use Validate /
+// ValidateWithOptions. The solve-time IP is returned in
+// ValidateResult.CaptchaArgs.UserIP.
 func (c *Client) ValidateWithClientIP(token string, keepToken bool, clientIP string) (*ValidateResult, error) {
 	return c.validateInternal(token, keepToken, clientIP)
 }
@@ -180,11 +208,13 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 		isOffline = false
 	}
 
-	// Make request
+	// Make request. clientIP is accepted by the (deprecated) public method for
+	// backward compatibility but is deliberately NOT sent — the dashboard
+	// ignores a caller IP for pass/fail (see validateRequest.ClientIP).
+	_ = clientIP
 	reqBody := validateRequest{
 		PassToken: token,
 		KeepToken: keepToken,
-		ClientIP:  clientIP, // omitempty: only serialized when non-empty
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -243,6 +273,24 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 			}
 			if uid, ok := apiResp.Data["uid"].(string); ok {
 				result.UID = uid
+			}
+			// captcha_args: solve-context echo (informational only).
+			if ca, ok := apiResp.Data["captcha_args"].(map[string]interface{}); ok {
+				if v, ok := ca["platform"].(string); ok {
+					result.CaptchaArgs.Platform = v
+				}
+				if v, ok := ca["user_ip"].(string); ok {
+					result.CaptchaArgs.UserIP = v
+				}
+				if v, ok := ca["referer"].(string); ok {
+					result.CaptchaArgs.Referer = v
+				}
+				if v, ok := ca["pkg"].(string); ok {
+					result.CaptchaArgs.Pkg = v
+				}
+				if v, ok := ca["solved_at"].(float64); ok {
+					result.CaptchaArgs.SolvedAt = int64(v)
+				}
 			}
 			return result, nil
 		}
