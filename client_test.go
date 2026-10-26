@@ -11,28 +11,195 @@ import (
 	"time"
 )
 
-func TestClientOnlyToken(t *testing.T) {
-	client := NewClient("test_key", "test_secret")
-	result, err := client.Validate("client_abc123xyz")
+// closedURL is a localhost URL nothing listens on (connection refused).
+const closedURL = "http://127.0.0.1:1"
 
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
+// anyStatusServer answers every request with the given status and a
+// non-JSON body: for reachability purposes any HTTP response counts.
+func anyStatusServer(status int, hits *int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits != nil {
+			*hits++
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("nope"))
+	}))
+}
+
+func TestClientOnlyTokenAcceptedWhenBothAPIsUnreachable(t *testing.T) {
+	for _, tok := range []string{"client_abc123xyz", "co_abc123xyz"} {
+		client := NewClient("test_key", "test_secret")
+		client.BaseURL = closedURL
+		client.BackupURL = "http://127.0.0.1:2"
+		result, err := client.Validate(tok)
+
+		if err != nil {
+			t.Errorf("%s: expected no error, got %v", tok, err)
+		}
+		if !result.Valid {
+			t.Errorf("%s: expected client-only token to be valid during total outage", tok)
+		}
+		if !result.Offline {
+			t.Errorf("%s: expected client-only token to be marked as offline", tok)
+		}
+		if !result.ClientOnly {
+			t.Errorf("%s: expected client-only token to be marked as client_only", tok)
+		}
+		if result.Warning == "" {
+			t.Errorf("%s: expected warning for client-only token", tok)
+		}
 	}
+}
 
-	if !result.Valid {
-		t.Error("Expected client-only token to be valid")
+func TestClientOnlyTokenRejectedWhenMainReachable(t *testing.T) {
+	for _, status := range []int{200, 400, 503} {
+		for _, tok := range []string{"client_x", "co_x"} {
+			hits := 0
+			srv := anyStatusServer(status, &hits)
+			client := NewClient("k", "s")
+			client.BaseURL = srv.URL
+			client.BackupURL = closedURL
+			result, err := client.Validate(tok)
+			srv.Close()
+
+			if err == nil {
+				t.Errorf("%s/%d: expected error", tok, status)
+			}
+			if result.Valid {
+				t.Errorf("%s/%d: client-only token must be rejected when main API is reachable", tok, status)
+			}
+			if !result.ClientOnly {
+				t.Errorf("%s/%d: expected ClientOnly=true", tok, status)
+			}
+			if result.Error != ErrClientOnlyRejected {
+				t.Errorf("%s/%d: expected error %q, got %q", tok, status, ErrClientOnlyRejected, result.Error)
+			}
+			if hits != 1 {
+				t.Errorf("%s/%d: expected exactly 1 probe, got %d", tok, status, hits)
+			}
+		}
 	}
+}
 
-	if !result.Offline {
-		t.Error("Expected client-only token to be marked as offline")
+func TestClientOnlyTokenRejectedWhenOnlyBackupReachable(t *testing.T) {
+	hits := 0
+	srv := anyStatusServer(503, &hits)
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.BaseURL = closedURL
+	client.BackupURL = srv.URL
+
+	result, err := client.Validate("client_x")
+	if err == nil || result.Valid {
+		t.Fatalf("expected rejection when backup is reachable, got %+v err=%v", result, err)
 	}
-
-	if !result.ClientOnly {
-		t.Error("Expected client-only token to be marked as client_only")
+	if !result.ClientOnly || result.Error != ErrClientOnlyRejected {
+		t.Errorf("unexpected result %+v", result)
 	}
+	if hits != 1 {
+		t.Errorf("expected backup to be probed once, got %d", hits)
+	}
+}
 
-	if result.Warning == "" {
-		t.Error("Expected warning for client-only token")
+func TestClientOnlyProbeTimeoutCountsAsUnreachable(t *testing.T) {
+	old := probeTimeout
+	probeTimeout = 100 * time.Millisecond
+	defer func() { probeTimeout = old }()
+
+	block := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+	}))
+	defer slow.Close()
+	defer close(block)
+
+	client := NewClient("k", "s")
+	client.BaseURL = slow.URL
+	client.BackupURL = closedURL
+	result, err := client.Validate("client_x")
+	if err != nil || !result.Valid || !result.ClientOnly {
+		t.Fatalf("expected acceptance when probes time out, got %+v err=%v", result, err)
+	}
+}
+
+func TestClientOnlyReachabilityIsCached(t *testing.T) {
+	hits := 0
+	srv := anyStatusServer(200, &hits)
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.BaseURL = srv.URL
+	for i := 0; i < 5; i++ {
+		result, _ := client.Validate("client_x")
+		if result.Valid {
+			t.Fatal("expected rejection")
+		}
+	}
+	if hits != 1 {
+		t.Errorf("expected 1 probe thanks to the cache, got %d", hits)
+	}
+}
+
+func TestIsClientOnlyToken(t *testing.T) {
+	cases := map[string]bool{
+		"client_a": true, "co_a": true, "pt_a": false, "offline_a": false, "dg_a": false, "cox": false,
+	}
+	for tok, want := range cases {
+		if got := IsClientOnlyToken(tok); got != want {
+			t.Errorf("IsClientOnlyToken(%q) = %v, want %v", tok, got, want)
+		}
+	}
+}
+
+func TestValidateNonJSON5xxReturnsResult(t *testing.T) {
+	srv := anyStatusServer(502, nil)
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.BaseURL = srv.URL
+
+	result, err := client.Validate("pt_x")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for non-JSON 5xx")
+	}
+	if result.Valid || result.Error != "http_502" {
+		t.Errorf("unexpected result %+v", result)
+	}
+}
+
+func TestValidateNon2xxNeverValid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"code":0,"data":{"valid":true}}`))
+	}))
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.BaseURL = srv.URL
+	result, err := client.Validate("pt_x")
+	if err == nil || result == nil || result.Valid {
+		t.Fatalf("non-2xx must not validate, got %+v err=%v", result, err)
+	}
+}
+
+func TestStructLiteralClientDoesNotPanic(t *testing.T) {
+	srv := newMockServer(t, map[string]interface{}{"code": 0, "data": map[string]interface{}{"valid": true}}, nil, nil)
+	defer srv.Close()
+	client := &Client{AppKey: "k", AppSecret: "s", BaseURL: srv.URL}
+	result, err := client.Validate("pt_x")
+	if err != nil || !result.Valid {
+		t.Fatalf("unexpected %+v err=%v", result, err)
+	}
+}
+
+func TestIssueNonJSONResponse(t *testing.T) {
+	srv := anyStatusServer(502, nil)
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.IssueURL = srv.URL
+	r, err := client.IssueServerToken("login")
+	if err == nil || r == nil || r.OK {
+		t.Fatalf("expected failure result, got %+v err=%v", r, err)
 	}
 }
 
@@ -91,6 +258,14 @@ func TestTokenPrefixConstants(t *testing.T) {
 
 	if PrefixClient != "client_" {
 		t.Errorf("Expected PrefixClient to be 'client_', got '%s'", PrefixClient)
+	}
+
+	if PrefixClientWeb != "co_" {
+		t.Errorf("Expected PrefixClientWeb to be 'co_', got '%s'", PrefixClientWeb)
+	}
+
+	if PrefixDegraded != "dg_" {
+		t.Errorf("Expected PrefixDegraded to be 'dg_', got '%s'", PrefixDegraded)
 	}
 }
 
@@ -366,6 +541,8 @@ func TestValidateWithOptionsKeepToken(t *testing.T) {
 // Benchmark tests
 func BenchmarkClientOnlyToken(b *testing.B) {
 	client := NewClient("test_key", "test_secret")
+	client.BaseURL = closedURL
+	client.BackupURL = closedURL
 
 	for i := 0; i < b.N; i++ {
 		client.Validate("client_abc123xyz")

@@ -18,9 +18,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,8 +41,39 @@ const (
 	// Token prefixes
 	PrefixMain    = "pt_"      // Main API token prefix
 	PrefixOffline = "offline_" // Backup/offline token prefix
-	PrefixClient  = "client_"  // Client-only token prefix
+	PrefixClient  = "client_"  // Client-only token prefix (native SDKs)
+	// PrefixClientWeb is the client-only placeholder minted by the web SDK.
+	// It is handled exactly like PrefixClient.
+	PrefixClientWeb = "co_"
+	// PrefixDegraded marks a token issued under service degradation
+	// (e.g. quota exhausted). It is validated by the main API and reported
+	// via ValidateResult.Degraded.
+	PrefixDegraded = "dg_"
+
+	// ErrClientOnlyRejected is the ValidateResult.Error value returned when a
+	// client-only token (client_ / co_) is submitted while the Captchala API
+	// is reachable, i.e. there is no outage that could justify it.
+	ErrClientOnlyRejected = "client_only_rejected_api_reachable"
 )
+
+// maxResponseBytes caps how much of an API response body is read.
+const maxResponseBytes = 1 << 20 // 1 MiB
+
+// Reachability probe settings for client-only tokens. Package-level so tests
+// can shorten them; not part of the public API.
+var (
+	probeTimeout  = 2 * time.Second
+	probeCacheTTL = 30 * time.Second
+)
+
+// reachabilityCache remembers, per endpoint URL, until when the endpoint is
+// known to be reachable. Only positive results are cached so that a
+// recovering API immediately stops accepting client-only tokens, while a
+// flood of client-only tokens cannot amplify load on a healthy API.
+var reachabilityCache = struct {
+	sync.Mutex
+	until map[string]time.Time
+}{until: map[string]time.Time{}}
 
 // Client is the Captchala SDK client
 type Client struct {
@@ -176,15 +209,13 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 		}, errors.New("empty token")
 	}
 
-	// Handle client-only token (client_ prefix)
-	// These tokens cannot be verified server-side
-	if strings.HasPrefix(token, PrefixClient) {
-		return &ValidateResult{
-			Valid:      true,
-			Offline:    true,
-			ClientOnly: true,
-			Warning:    "Client-only token cannot be verified server-side",
-		}, nil
+	// Client-only placeholders (client_ from native SDKs, co_ from the web
+	// SDK) are minted on the device only when BOTH the main API and the
+	// backup service were unreachable. They carry no signature and no server
+	// record, so they are accepted only if this server cannot reach either
+	// endpoint either (a genuine total outage). Otherwise they are rejected.
+	if IsClientOnlyToken(token) {
+		return c.validateClientOnly()
 	}
 
 	// Select API based on token prefix
@@ -218,19 +249,19 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, err
+		return &ValidateResult{Valid: false, Offline: isOffline, Error: "request_failed"}, err
 	}
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return nil, err
+		return &ValidateResult{Valid: false, Offline: isOffline, Error: "request_failed"}, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-App-Key", c.AppKey)
 	req.Header.Set("X-App-Secret", c.AppSecret)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return &ValidateResult{
 			Valid:   false,
@@ -240,18 +271,31 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, err
+		return &ValidateResult{
+			Valid:   false,
+			Offline: isOffline,
+			Error:   "request_failed",
+		}, err
 	}
 
 	var apiResp apiResponse
 	if err := json.Unmarshal(body, &apiResp); err != nil {
-		return nil, err
+		errCode := "invalid_response"
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			errCode = fmt.Sprintf("http_%d", resp.StatusCode)
+		}
+		return &ValidateResult{
+			Valid:   false,
+			Offline: isOffline,
+			Error:   errCode,
+		}, fmt.Errorf("%s: %w", errCode, err)
 	}
+	httpOK := resp.StatusCode >= 200 && resp.StatusCode <= 299
 
-	// Parse response
-	if apiResp.Code == 0 {
+	// Parse response. A success is only honoured on a 2xx status.
+	if apiResp.Code == 0 && httpOK {
 		valid := false
 		if v, ok := apiResp.Data["valid"].(bool); ok {
 			valid = v
@@ -321,11 +365,109 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 		errMsg = apiResp.Message
 	}
 
+	if errMsg == "unknown_error" && !httpOK {
+		errMsg = fmt.Sprintf("http_%d", resp.StatusCode)
+	}
+
 	return &ValidateResult{
 		Valid:   false,
 		Offline: isOffline,
 		Error:   errMsg,
 	}, errors.New(errMsg)
+}
+
+// IsClientOnlyToken reports whether token is a device-minted client-only
+// placeholder (client_ or co_ prefix).
+func IsClientOnlyToken(token string) bool {
+	return strings.HasPrefix(token, PrefixClient) || strings.HasPrefix(token, PrefixClientWeb)
+}
+
+// validateClientOnly decides a client-only token by probing reachability:
+// main API reachable -> reject; else backup reachable -> reject (the device
+// should have obtained an offline_ token); both unreachable -> accept.
+func (c *Client) validateClientOnly() (*ValidateResult, error) {
+	mainURL := c.BaseURL
+	if mainURL == "" {
+		mainURL = MainAPIURL
+	}
+	if c.probeReachable(mainURL) {
+		return &ValidateResult{
+			Valid:      false,
+			Offline:    true,
+			ClientOnly: true,
+			Error:      ErrClientOnlyRejected,
+			Warning:    "Client-only token rejected: main API is reachable",
+		}, errors.New(ErrClientOnlyRejected)
+	}
+	backupURL := c.BackupURL
+	if backupURL == "" {
+		backupURL = BackupAPIURL
+	}
+	if c.probeReachable(backupURL) {
+		return &ValidateResult{
+			Valid:      false,
+			Offline:    true,
+			ClientOnly: true,
+			Error:      ErrClientOnlyRejected,
+			Warning:    "Client-only token rejected: backup API is reachable",
+		}, errors.New(ErrClientOnlyRejected)
+	}
+	return &ValidateResult{
+		Valid:      true,
+		Offline:    true,
+		ClientOnly: true,
+		Warning:    "Client-only token accepted: Captchala API unreachable, token cannot be verified server-side",
+	}, nil
+}
+
+// probeReachable reports whether url answers with ANY HTTP response within
+// probeTimeout. Transport errors and timeouts mean unreachable. Positive
+// results are cached for probeCacheTTL.
+func (c *Client) probeReachable(url string) bool {
+	now := time.Now()
+	reachabilityCache.Lock()
+	until, ok := reachabilityCache.until[url]
+	reachabilityCache.Unlock()
+	if ok && now.Before(until) {
+		return true
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBufferString(`{"pass_token":"","keep_token":true}`))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-App-Key", c.AppKey)
+	req.Header.Set("X-App-Secret", c.AppSecret)
+
+	probe := &http.Client{Timeout: probeTimeout}
+	if base := c.httpClient(); base.Transport != nil {
+		probe.Transport = base.Transport
+	}
+	resp, err := probe.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+	resp.Body.Close()
+
+	reachabilityCache.Lock()
+	reachabilityCache.until[url] = time.Now().Add(probeCacheTTL)
+	reachabilityCache.Unlock()
+	return true
+}
+
+// httpClient returns the configured HTTP client, falling back to a default
+// one for Clients built as struct literals instead of via NewClient.
+func (c *Client) httpClient() *http.Client {
+	if c.client != nil {
+		return c.client
+	}
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 // IssueResult contains the server_token issuance result.
@@ -527,19 +669,29 @@ func (c *Client) requestJSON(url string, body interface{}) (*apiResponse, error)
 	req.Header.Set("X-App-Key", c.AppKey)
 	req.Header.Set("X-App-Secret", c.AppSecret)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, err
 	}
 	var out apiResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return nil, fmt.Errorf("http_%d: %w", resp.StatusCode, err)
+		}
 		return nil, err
+	}
+	if out.Code == 0 && (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		// Never treat a non-2xx response as success.
+		out.Code = -1
+		if out.Message == "" {
+			out.Message = fmt.Sprintf("http_%d", resp.StatusCode)
+		}
 	}
 	return &out, nil
 }

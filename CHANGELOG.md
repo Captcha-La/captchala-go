@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.3] - 2026-10-27
+
+### Security
+- Client-only tokens (`client_`, and now also the web SDK's `co_`) are no
+  longer accepted unconditionally. `Validate*` probes the main API and then the
+  backup API (2s timeout each); if either answers with any HTTP response the
+  token is rejected with `Valid=false`, `ClientOnly=true`,
+  `Error="client_only_rejected_api_reachable"`. The token is accepted
+  (`Valid=true`, `ClientOnly=true`) only when both endpoints are unreachable.
+  Positive reachability results are cached in-process for 30 seconds.
+  Previously any string starting with `client_` passed without a network call.
+
+### Added
+- `PrefixClientWeb` (`co_`), `PrefixDegraded` (`dg_`), `ErrClientOnlyRejected`
+  constants and `IsClientOnlyToken(token)` helper.
+
+### Fixed
+- Non-JSON or non-2xx responses (e.g. an HTML 502 from a proxy) no longer make
+  `Validate*` return a `nil` result; a result with `Error="http_<status>"` or
+  `"invalid_response"` is returned alongside the error. A `code:0` body on a
+  non-2xx status is never treated as success.
+- Response bodies are read through a 1 MiB `io.LimitReader`.
+- A `Client` built as a struct literal (without `NewClient`) no longer panics
+  on a nil HTTP client.
+
 ## [1.2.2] - 2026-06-20
 
 ### Added

@@ -220,7 +220,25 @@ result.HasCategory("violence", "csam")  // true if ANY of the names tripped
 |--------|--------|----------------|
 | `pt_` | Main API | High |
 | `offline_` | Backup Service | Medium |
-| `client_` | Client-only | Low (cannot verify server-side) |
+| `dg_` | Main API, degraded (e.g. quota exhausted) | `Valid` is always `false`; check `Degraded` and decide yourself |
+| `client_` | Client-only placeholder (native SDKs) | None — see below |
+| `co_` | Client-only placeholder (web SDK) | None — see below |
+
+### Client-only tokens (`client_` / `co_`)
+
+These placeholders are minted on the device only when **both** the main API
+and the backup service were unreachable. They carry no signature and no server
+record. Since v1.2.3 the SDK no longer accepts them blindly:
+
+1. It probes the main API (2s timeout). Any HTTP response means there is no
+   outage → `Valid=false`, `ClientOnly=true`, `Error="client_only_rejected_api_reachable"`.
+2. Otherwise it probes the backup API (2s timeout). Any HTTP response → rejected
+   the same way (the device should have received an `offline_` token).
+3. Only if both are unreachable (network error / timeout) → `Valid=true`,
+   `ClientOnly=true`, `Offline=true`.
+
+A positive "reachable" probe result is cached in-process for 30 seconds.
+Use `captchala.IsClientOnlyToken(token)` to detect these prefixes.
 
 ## Complete Example
 
