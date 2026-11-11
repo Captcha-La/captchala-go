@@ -225,7 +225,16 @@ result.HasCategory("violence", "csam")  // 任一命中即 true
 2. 否则探测备用服务（超时 2 秒），有任意 HTTP 响应同样拒绝（设备本应拿到 `offline_` Token）。
 3. 只有两者都不可达（网络错误/超时）时才 `Valid=true`、`ClientOnly=true`、`Offline=true`。
 
-"可达"结果在进程内缓存 30 秒。可用 `captchala.IsClientOnlyToken(token)` 判断前缀。
+探测结果在进程内缓存：「可达」30 秒，「不可达」5 秒；并发的验证对同一地址只发一次探测，故障期间不会每个请求都等两次超时。
+
+登录、支付等敏感操作可以选择在故障期间也拒绝纯客户端 Token：
+
+```go
+client.RejectClientOnly = true
+// client_ / co_ → Valid=false，Error=captchala.ErrClientOnlyPolicy（"client_only_rejected_by_policy"）
+```
+
+可用 `captchala.IsClientOnlyToken(token)` 判断前缀。
 
 ## 完整示例
 

@@ -237,7 +237,18 @@ record. Since v1.2.3 the SDK no longer accepts them blindly:
 3. Only if both are unreachable (network error / timeout) → `Valid=true`,
    `ClientOnly=true`, `Offline=true`.
 
-A positive "reachable" probe result is cached in-process for 30 seconds.
+Probe results are cached in-process: "reachable" for 30 seconds,
+"unreachable" for 5 seconds, and concurrent validations share one probe per
+endpoint, so an outage does not make every request wait for two timeouts.
+
+For sensitive actions (login, payment) you can refuse client-only tokens even
+during an outage:
+
+```go
+client.RejectClientOnly = true
+// client_ / co_ -> Valid=false, Error=captchala.ErrClientOnlyPolicy ("client_only_rejected_by_policy")
+```
+
 Use `captchala.IsClientOnlyToken(token)` to detect these prefixes.
 
 ## Complete Example

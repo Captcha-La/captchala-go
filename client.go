@@ -54,6 +54,10 @@ const (
 	// client-only token (client_ / co_) is submitted while the Captchala API
 	// is reachable, i.e. there is no outage that could justify it.
 	ErrClientOnlyRejected = "client_only_rejected_api_reachable"
+
+	// ErrClientOnlyPolicy is the ValidateResult.Error value returned for a
+	// client-only token when Client.RejectClientOnly is set.
+	ErrClientOnlyPolicy = "client_only_rejected_by_policy"
 )
 
 // maxResponseBytes caps how much of an API response body is read.
@@ -64,16 +68,36 @@ const maxResponseBytes = 1 << 20 // 1 MiB
 var (
 	probeTimeout  = 2 * time.Second
 	probeCacheTTL = 30 * time.Second
+	// probeUnreachableTTL caches "unreachable" briefly: long enough that an
+	// outage does not make every request wait for two probe timeouts, short
+	// enough that a network blip does not keep accepting client-only tokens.
+	probeUnreachableTTL = 5 * time.Second
 )
 
-// reachabilityCache remembers, per endpoint URL, until when the endpoint is
-// known to be reachable. Only positive results are cached so that a
-// recovering API immediately stops accepting client-only tokens, while a
-// flood of client-only tokens cannot amplify load on a healthy API.
+type probeEntry struct {
+	reachable bool
+	until     time.Time
+}
+
+// reachabilityCache remembers, per endpoint URL, the last probe result until
+// it expires (probeCacheTTL when reachable, probeUnreachableTTL otherwise).
 var reachabilityCache = struct {
 	sync.Mutex
-	until map[string]time.Time
-}{until: map[string]time.Time{}}
+	m map[string]probeEntry
+}{m: map[string]probeEntry{}}
+
+// probeFlight makes probing single-flight per URL: concurrent validations of
+// client-only tokens wait for the one probe in progress instead of each
+// opening its own connection.
+type probeCall struct {
+	done      chan struct{}
+	reachable bool
+}
+
+var probeFlight = struct {
+	sync.Mutex
+	m map[string]*probeCall
+}{m: map[string]*probeCall{}}
 
 // Client is the Captchala SDK client
 type Client struct {
@@ -92,7 +116,11 @@ type Client struct {
 	IssueURL              string
 	ModerationCheckURLStr string
 	ModerationTextURLStr  string
-	client                *http.Client
+	// RejectClientOnly, when true, rejects client-only tokens (client_ / co_)
+	// without probing, even during an outage (Error = ErrClientOnlyPolicy).
+	// Use it for actions that should fail closed, such as login or payment.
+	RejectClientOnly bool
+	client           *http.Client
 }
 
 // ValidateResult contains the validation result
@@ -386,6 +414,15 @@ func IsClientOnlyToken(token string) bool {
 // main API reachable -> reject; else backup reachable -> reject (the device
 // should have obtained an offline_ token); both unreachable -> accept.
 func (c *Client) validateClientOnly() (*ValidateResult, error) {
+	if c.RejectClientOnly {
+		return &ValidateResult{
+			Valid:      false,
+			Offline:    true,
+			ClientOnly: true,
+			Error:      ErrClientOnlyPolicy,
+			Warning:    "Client-only token rejected: client-only tokens are disabled for this client",
+		}, errors.New(ErrClientOnlyPolicy)
+	}
 	mainURL := c.BaseURL
 	if mainURL == "" {
 		mainURL = MainAPIURL
@@ -421,17 +458,44 @@ func (c *Client) validateClientOnly() (*ValidateResult, error) {
 }
 
 // probeReachable reports whether url answers with ANY HTTP response within
-// probeTimeout. Transport errors and timeouts mean unreachable. Positive
-// results are cached for probeCacheTTL.
+// probeTimeout. Transport errors and timeouts mean unreachable. Results are
+// cached (probeCacheTTL / probeUnreachableTTL) and probing is single-flight
+// per URL.
 func (c *Client) probeReachable(url string) bool {
-	now := time.Now()
 	reachabilityCache.Lock()
-	until, ok := reachabilityCache.until[url]
+	e, ok := reachabilityCache.m[url]
 	reachabilityCache.Unlock()
-	if ok && now.Before(until) {
-		return true
+	if ok && time.Now().Before(e.until) {
+		return e.reachable
 	}
 
+	probeFlight.Lock()
+	if call, busy := probeFlight.m[url]; busy {
+		probeFlight.Unlock()
+		<-call.done
+		return call.reachable
+	}
+	call := &probeCall{done: make(chan struct{})}
+	probeFlight.m[url] = call
+	probeFlight.Unlock()
+
+	call.reachable = c.doProbe(url)
+	ttl := probeUnreachableTTL
+	if call.reachable {
+		ttl = probeCacheTTL
+	}
+	reachabilityCache.Lock()
+	reachabilityCache.m[url] = probeEntry{reachable: call.reachable, until: time.Now().Add(ttl)}
+	reachabilityCache.Unlock()
+
+	probeFlight.Lock()
+	delete(probeFlight.m, url)
+	probeFlight.Unlock()
+	close(call.done)
+	return call.reachable
+}
+
+func (c *Client) doProbe(url string) bool {
 	req, err := http.NewRequest("POST", url, bytes.NewBufferString(`{"pass_token":"","keep_token":true}`))
 	if err != nil {
 		return false
@@ -450,10 +514,6 @@ func (c *Client) probeReachable(url string) bool {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
 	resp.Body.Close()
-
-	reachabilityCache.Lock()
-	reachabilityCache.until[url] = time.Now().Add(probeCacheTTL)
-	reachabilityCache.Unlock()
 	return true
 }
 
@@ -502,7 +562,8 @@ func (c *Client) IssueServerTokenWithOptions(action string, opts IssueOptions) (
 	}
 	body := map[string]interface{}{"action": action}
 	if opts.BindingIP != "" {
-		body["binding_ip"] = opts.BindingIP
+		// Wire name is bind_ip (as in the API docs); the server still accepts binding_ip.
+		body["bind_ip"] = opts.BindingIP
 	}
 	if opts.TTL > 0 {
 		body["ttl"] = opts.TTL

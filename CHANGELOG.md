@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.4] - Unreleased
+
+### Added
+- `Client.RejectClientOnly`: when true, client-only tokens (`client_` / `co_`)
+  are rejected without probing, `Error = ErrClientOnlyPolicy`
+  (`client_only_rejected_by_policy`). For actions that should fail closed during
+  an outage (login, payment).
+
+### Changed
+- Client-only reachability probes also cache "unreachable" results, for 5
+  seconds, so an outage no longer makes every request wait for two probe
+  timeouts. "Reachable" is still cached for 30 seconds.
+- Probing is single-flight per endpoint: concurrent validations wait for the one
+  probe in progress.
+- `IssueServerTokenWithOptions` sends the user IP as `bind_ip`, the name used in
+  the API docs. The server still accepts the old `binding_ip`. The Go field name
+  (`IssueOptions.BindingIP`) is unchanged.
+
 ## [1.2.3] - 2026-10-27
 
 ### Security

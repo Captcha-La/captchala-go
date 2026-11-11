@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -548,3 +549,109 @@ func BenchmarkClientOnlyToken(b *testing.B) {
 		client.Validate("client_abc123xyz")
 	}
 }
+
+func resetProbeState() {
+	reachabilityCache.Lock()
+	reachabilityCache.m = map[string]probeEntry{}
+	reachabilityCache.Unlock()
+}
+
+func TestClientOnlyUnreachableIsCachedBriefly(t *testing.T) {
+	resetProbeState()
+	hits := 0
+	// a server that is closed after creation: probes fail, and we count dial attempts via a transport
+	client := NewClient("k", "s")
+	client.BaseURL = "http://127.0.0.1:3"
+	client.BackupURL = "http://127.0.0.1:4"
+	client.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		hits++
+		return nil, io.ErrUnexpectedEOF
+	})}
+	for i := 0; i < 5; i++ {
+		result, err := client.Validate("client_x")
+		if err != nil || !result.Valid {
+			t.Fatalf("expected acceptance during outage, got %+v err=%v", result, err)
+		}
+	}
+	if hits != 2 {
+		t.Errorf("expected one probe per endpoint then cached unreachable, got %d", hits)
+	}
+}
+
+func TestRejectClientOnlyRefusesWithoutProbing(t *testing.T) {
+	resetProbeState()
+	for _, tok := range []string{"client_x", "co_x"} {
+		hits := 0
+		srv := anyStatusServer(200, &hits)
+		client := NewClient("k", "s")
+		client.BaseURL = srv.URL
+		client.BackupURL = srv.URL
+		client.RejectClientOnly = true
+		result, err := client.Validate(tok)
+		srv.Close()
+		if err == nil || result.Valid || !result.ClientOnly || result.Error != ErrClientOnlyPolicy {
+			t.Fatalf("%s: expected policy rejection, got %+v err=%v", tok, result, err)
+		}
+		if hits != 0 {
+			t.Errorf("%s: expected no probe, got %d", tok, hits)
+		}
+	}
+}
+
+func TestClientOnlyProbeIsSingleFlight(t *testing.T) {
+	resetProbeState()
+	var mu sync.Mutex
+	hits := 0
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		<-release
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client := NewClient("k", "s")
+			client.BaseURL = srv.URL
+			if r, _ := client.Validate("client_x"); r.Valid {
+				t.Error("expected rejection while the main API is reachable")
+			}
+		}()
+	}
+	time.Sleep(200 * time.Millisecond) // let every goroutine reach the probe
+	close(release)
+	wg.Wait()
+	if hits != 1 {
+		t.Errorf("expected a single probe for concurrent validations, got %d", hits)
+	}
+}
+
+func TestIssueSendsBindIP(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"code":0,"data":{"server_token":"st_x","expires_in":300}}`))
+	}))
+	defer srv.Close()
+	client := NewClient("k", "s")
+	client.IssueURL = srv.URL
+	if _, err := client.IssueServerTokenWithOptions("login", IssueOptions{BindingIP: "1.2.3.4"}); err != nil {
+		t.Fatal(err)
+	}
+	if body["bind_ip"] != "1.2.3.4" {
+		t.Errorf("expected bind_ip, got %v", body)
+	}
+	if _, old := body["binding_ip"]; old {
+		t.Errorf("binding_ip should no longer be sent: %v", body)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
