@@ -1,8 +1,8 @@
 # Captchala Go SDK
 
-服务端验证 Captcha Token 的 Go SDK。
+[English](https://github.com/Captcha-La/captchala-go/blob/main/README.md) · **简体中文** · [日本語](https://github.com/Captcha-La/captchala-go/blob/main/README.ja.md) · [한국어](https://github.com/Captcha-La/captchala-go/blob/main/README.ko.md) · [Español](https://github.com/Captcha-La/captchala-go/blob/main/README.es.md) · [Português (BR)](https://github.com/Captcha-La/captchala-go/blob/main/README.pt-BR.md) · [Deutsch](https://github.com/Captcha-La/captchala-go/blob/main/README.de.md)
 
-[English](README.md) | **简体中文**
+服务端验证 Captcha Token 的 Go SDK。
 
 - [官网](https://captcha.la)
 - [文档](https://docs.captcha.la/zh-CN/sdk/server-go)
