@@ -30,8 +30,8 @@ func anyStatusServer(status int, hits *int) *httptest.Server {
 func TestClientOnlyTokenAcceptedWhenBothAPIsUnreachable(t *testing.T) {
 	for _, tok := range []string{"client_abc123xyz", "co_abc123xyz"} {
 		client := NewClient("test_key", "test_secret")
-		client.BaseURL = closedURL
-		client.BackupURL = "http://127.0.0.1:2"
+		client.baseURL = closedURL
+		client.backupURL = "http://127.0.0.1:2"
 		result, err := client.Validate(tok)
 
 		if err != nil {
@@ -58,8 +58,8 @@ func TestClientOnlyTokenRejectedWhenMainReachable(t *testing.T) {
 			hits := 0
 			srv := anyStatusServer(status, &hits)
 			client := NewClient("k", "s")
-			client.BaseURL = srv.URL
-			client.BackupURL = closedURL
+			client.baseURL = srv.URL
+			client.backupURL = closedURL
 			result, err := client.Validate(tok)
 			srv.Close()
 
@@ -87,8 +87,8 @@ func TestClientOnlyTokenRejectedWhenOnlyBackupReachable(t *testing.T) {
 	srv := anyStatusServer(503, &hits)
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.BaseURL = closedURL
-	client.BackupURL = srv.URL
+	client.baseURL = closedURL
+	client.backupURL = srv.URL
 
 	result, err := client.Validate("client_x")
 	if err == nil || result.Valid {
@@ -115,8 +115,8 @@ func TestClientOnlyProbeTimeoutCountsAsUnreachable(t *testing.T) {
 	defer close(block)
 
 	client := NewClient("k", "s")
-	client.BaseURL = slow.URL
-	client.BackupURL = closedURL
+	client.baseURL = slow.URL
+	client.backupURL = closedURL
 	result, err := client.Validate("client_x")
 	if err != nil || !result.Valid || !result.ClientOnly {
 		t.Fatalf("expected acceptance when probes time out, got %+v err=%v", result, err)
@@ -128,7 +128,7 @@ func TestClientOnlyReachabilityIsCached(t *testing.T) {
 	srv := anyStatusServer(200, &hits)
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 	for i := 0; i < 5; i++ {
 		result, _ := client.Validate("client_x")
 		if result.Valid {
@@ -155,7 +155,7 @@ func TestValidateNonJSON5xxReturnsResult(t *testing.T) {
 	srv := anyStatusServer(502, nil)
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	result, err := client.Validate("pt_x")
 	if err == nil {
@@ -176,7 +176,7 @@ func TestValidateNon2xxNeverValid(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 	result, err := client.Validate("pt_x")
 	if err == nil || result == nil || result.Valid {
 		t.Fatalf("non-2xx must not validate, got %+v err=%v", result, err)
@@ -186,7 +186,7 @@ func TestValidateNon2xxNeverValid(t *testing.T) {
 func TestStructLiteralClientDoesNotPanic(t *testing.T) {
 	srv := newMockServer(t, map[string]interface{}{"code": 0, "data": map[string]interface{}{"valid": true}}, nil, nil)
 	defer srv.Close()
-	client := &Client{AppKey: "k", AppSecret: "s", BaseURL: srv.URL}
+	client := &Client{AppKey: "k", AppSecret: "s", baseURL: srv.URL}
 	result, err := client.Validate("pt_x")
 	if err != nil || !result.Valid {
 		t.Fatalf("unexpected %+v err=%v", result, err)
@@ -197,7 +197,7 @@ func TestIssueNonJSONResponse(t *testing.T) {
 	srv := anyStatusServer(502, nil)
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.IssueURL = srv.URL
+	client.issueURL = srv.URL
 	r, err := client.IssueServerToken("login")
 	if err == nil || r == nil || r.OK {
 		t.Fatalf("expected failure result, got %+v err=%v", r, err)
@@ -331,7 +331,7 @@ func TestValidateMainHappyPath(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	result, err := client.Validate("pt_some_real_token")
 	if err != nil {
@@ -373,7 +373,7 @@ func TestValidateOfflineUsesBackupURL(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BackupURL = srv.URL
+	client.backupURL = srv.URL
 
 	result, err := client.Validate("offline_abc")
 	if err != nil {
@@ -398,7 +398,7 @@ func TestValidateSendsClientIPWhenProvided(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	result, err := client.ValidateWithClientIP("pt_xyz", false, "203.0.113.9")
 	if err != nil {
@@ -430,7 +430,7 @@ func TestValidateParsesCaptchaArgs(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	result, err := client.Validate("pt_xyz")
 	if err != nil {
@@ -461,7 +461,7 @@ func TestValidateWithClientIPEmptyOmitsField(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	_, err := client.ValidateWithClientIP("pt_xyz", true, "")
 	if err != nil {
@@ -475,7 +475,7 @@ func TestValidateWithClientIPEmptyOmitsField(t *testing.T) {
 func TestValidateNetworkErrorReturnsRequestFailed(t *testing.T) {
 	client := NewClient("k", "s")
 	// Point to a closed port on localhost → connection refused
-	client.BaseURL = "http://127.0.0.1:1"
+	client.baseURL = "http://127.0.0.1:1"
 
 	result, err := client.Validate("pt_something")
 	if err == nil {
@@ -504,7 +504,7 @@ func TestValidateBackendErrorPropagates(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	result, err := client.Validate("pt_bad")
 	if err == nil {
@@ -528,7 +528,7 @@ func TestValidateWithOptionsKeepToken(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient("k", "s")
-	client.BaseURL = srv.URL
+	client.baseURL = srv.URL
 
 	_, err := client.ValidateWithOptions("pt_x", true)
 	if err != nil {
@@ -542,8 +542,8 @@ func TestValidateWithOptionsKeepToken(t *testing.T) {
 // Benchmark tests
 func BenchmarkClientOnlyToken(b *testing.B) {
 	client := NewClient("test_key", "test_secret")
-	client.BaseURL = closedURL
-	client.BackupURL = closedURL
+	client.baseURL = closedURL
+	client.backupURL = closedURL
 
 	for i := 0; i < b.N; i++ {
 		client.Validate("client_abc123xyz")
@@ -561,8 +561,8 @@ func TestClientOnlyUnreachableIsCachedBriefly(t *testing.T) {
 	hits := 0
 	// a server that is closed after creation: probes fail, and we count dial attempts via a transport
 	client := NewClient("k", "s")
-	client.BaseURL = "http://127.0.0.1:3"
-	client.BackupURL = "http://127.0.0.1:4"
+	client.baseURL = "http://127.0.0.1:3"
+	client.backupURL = "http://127.0.0.1:4"
 	client.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		hits++
 		return nil, io.ErrUnexpectedEOF
@@ -584,8 +584,8 @@ func TestRejectClientOnlyRefusesWithoutProbing(t *testing.T) {
 		hits := 0
 		srv := anyStatusServer(200, &hits)
 		client := NewClient("k", "s")
-		client.BaseURL = srv.URL
-		client.BackupURL = srv.URL
+		client.baseURL = srv.URL
+		client.backupURL = srv.URL
 		client.RejectClientOnly = true
 		result, err := client.Validate(tok)
 		srv.Close()
@@ -618,7 +618,7 @@ func TestClientOnlyProbeIsSingleFlight(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			client := NewClient("k", "s")
-			client.BaseURL = srv.URL
+			client.baseURL = srv.URL
 			if r, _ := client.Validate("client_x"); r.Valid {
 				t.Error("expected rejection while the main API is reachable")
 			}
@@ -640,7 +640,7 @@ func TestIssueSendsBindIP(t *testing.T) {
 	}))
 	defer srv.Close()
 	client := NewClient("k", "s")
-	client.IssueURL = srv.URL
+	client.issueURL = srv.URL
 	if _, err := client.IssueServerTokenWithOptions("login", IssueOptions{BindingIP: "1.2.3.4"}); err != nil {
 		t.Fatal(err)
 	}

@@ -28,15 +28,15 @@ import (
 
 const (
 	// MainAPIURL is the primary API endpoint for pt_ tokens
-	MainAPIURL = "https://apiv1.captcha.la/v1/validate"
+	MainAPIURL = "https://verify.captcha.la/v1/validate"
 	// BackupAPIURL is the backup API endpoint for offline_ tokens
 	BackupAPIURL = "https://fallbackapiv1.captchala.com/api/validate"
 	// IssueAPIURL mints a one-time server_token (sct_) — POST /v1/server/challenge/issue
-	IssueAPIURL = "https://apiv1.captcha.la/v1/server/challenge/issue"
+	IssueAPIURL = "https://verify.captcha.la/v1/server/challenge/issue"
 	// ModerationCheckURL multi-modal content moderation — POST /v1/moderation/check
-	ModerationCheckURL = "https://apiv1.captcha.la/v1/moderation/check"
+	ModerationCheckURL = "https://verify.captcha.la/v1/moderation/check"
 	// ModerationTextURL plain-text moderation — POST /v1/moderation/text
-	ModerationTextURL = "https://apiv1.captcha.la/v1/moderation/text"
+	ModerationTextURL = "https://verify.captcha.la/v1/moderation/text"
 
 	// Token prefixes
 	PrefixMain    = "pt_"      // Main API token prefix
@@ -104,23 +104,23 @@ type Client struct {
 	AppKey    string
 	AppSecret string
 	Timeout   time.Duration
-	// BaseURL overrides the main API URL. Mainly used for tests.
-	// If empty, MainAPIURL is used.
+	// Deprecated: has no effect. Requests always go to the CaptchaLa API endpoints.
 	BaseURL string
-	// BackupURL overrides the backup API URL. Mainly used for tests.
-	// If empty, BackupAPIURL is used.
+	// Deprecated: has no effect. Requests always go to the CaptchaLa API endpoints.
 	BackupURL string
-	// IssueURL / ModerationCheckURL / ModerationTextURL override the
-	// corresponding endpoint URLs. Mainly used for tests; leave empty
-	// in production.
-	IssueURL              string
+	// Deprecated: has no effect. Requests always go to the CaptchaLa API endpoints.
+	IssueURL string
+	// Deprecated: has no effect. Requests always go to the CaptchaLa API endpoints.
 	ModerationCheckURLStr string
-	ModerationTextURLStr  string
+	// Deprecated: has no effect. Requests always go to the CaptchaLa API endpoints.
+	ModerationTextURLStr string
 	// RejectClientOnly, when true, rejects client-only tokens (client_ / co_)
 	// without probing, even during an outage (Error = ErrClientOnlyPolicy).
 	// Use it for actions that should fail closed, such as login or payment.
 	RejectClientOnly bool
 	client           *http.Client
+	// Endpoint overrides for this package's tests only.
+	baseURL, backupURL, issueURL, moderationCheckURL, moderationTextURL string
 }
 
 // ValidateResult contains the validation result
@@ -252,14 +252,14 @@ func (c *Client) validateInternal(token string, keepToken bool, clientIP string)
 
 	if strings.HasPrefix(token, PrefixOffline) {
 		// offline_ prefix -> use backup API
-		apiURL = c.BackupURL
+		apiURL = c.backupURL
 		if apiURL == "" {
 			apiURL = BackupAPIURL
 		}
 		isOffline = true
 	} else {
 		// pt_ prefix or any other -> use main API
-		apiURL = c.BaseURL
+		apiURL = c.baseURL
 		if apiURL == "" {
 			apiURL = MainAPIURL
 		}
@@ -423,7 +423,7 @@ func (c *Client) validateClientOnly() (*ValidateResult, error) {
 			Warning:    "Client-only token rejected: client-only tokens are disabled for this client",
 		}, errors.New(ErrClientOnlyPolicy)
 	}
-	mainURL := c.BaseURL
+	mainURL := c.baseURL
 	if mainURL == "" {
 		mainURL = MainAPIURL
 	}
@@ -436,7 +436,7 @@ func (c *Client) validateClientOnly() (*ValidateResult, error) {
 			Warning:    "Client-only token rejected: main API is reachable",
 		}, errors.New(ErrClientOnlyRejected)
 	}
-	backupURL := c.BackupURL
+	backupURL := c.backupURL
 	if backupURL == "" {
 		backupURL = BackupAPIURL
 	}
@@ -575,7 +575,7 @@ func (c *Client) IssueServerTokenWithOptions(action string, opts IssueOptions) (
 		body["bind_uid"] = opts.BindUID
 	}
 
-	url := c.IssueURL
+	url := c.issueURL
 	if url == "" {
 		url = IssueAPIURL
 	}
@@ -657,7 +657,7 @@ func (c *Client) ModerationCheck(input []ModerationItem, userID string) (*Modera
 	if userID != "" {
 		body["user_id"] = userID
 	}
-	url := c.ModerationCheckURLStr
+	url := c.moderationCheckURL
 	if url == "" {
 		url = ModerationCheckURL
 	}
@@ -677,7 +677,7 @@ func (c *Client) ModerationText(text, userID string) (*ModerationResult, error) 
 	if userID != "" {
 		body["user_id"] = userID
 	}
-	url := c.ModerationTextURLStr
+	url := c.moderationTextURL
 	if url == "" {
 		url = ModerationTextURL
 	}
